@@ -1,0 +1,29 @@
+parameters: {}
+environment: {}
+packages:
+  - name: scraper
+    shared: false
+    environment: {}
+    parameters: {}
+    annotations: {}
+    functions:
+      - name: scrape
+        binary: false
+        main: ""
+        runtime: nodejs:18
+        web: false
+        webSecure: false
+        parameters: {}
+        environment:
+          {
+            DB_USER: "${DB_USER}",
+            DB_PASSWORD: "${DB_PASSWORD}",
+            DB_URI: "${DB_URI}",
+          }
+        annotations: {}
+        limits: {}
+        triggers:
+          - name: hourly-scrape-trigger
+            sourceType: scheduler
+            sourceDetails:
+              cron: "0 * * * *"

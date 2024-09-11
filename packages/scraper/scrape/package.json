@@ -1,0 +1,19 @@
+{
+  "name": "kijiji-map-scraper",
+  "version": "1.0.0",
+  "description": "scraping service for kijiji-map app",
+  "main": "index.js",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Matt Kornelsen",
+  "license": "ISC",
+  "dependencies": {
+    "kijiji-scraper": "^6.3.6",
+    "mongodb": "^6.8.1"
+  }
+}

@@ -20,14 +20,15 @@ export async function main() {
         locationId: locations.ONTARIO.TORONTO_GTA.CITY_OF_TORONTO.id,
         categoryId: categories.REAL_ESTATE.FOR_RENT.LONG_TERM_RENTALS.id,
         sortByName: "dateDesc",
-        minResults: 60,
+        adType: "OFFER",
+        minResults: 40,
       },
       { scraperType: ScraperType.HTML }
     );
 
     console.info("Scraping finished.");
 
-    const listings = resp.map(mapToListing);
+    const listings = resp.map(mapToGeoJson);
 
     const db = client.db("kijiji-map");
 
@@ -35,11 +36,13 @@ export async function main() {
     console.info(`${result.insertedCount} pending listings were found.`);
     console.info("Running agregation piepleine.");
 
-    const beforeCount = await db.collection("listings").countDocuments();
+    const beforeCount = await db
+      .collection("listing-features")
+      .countDocuments();
 
     await db.collection("pending-listings").aggregate(mergePipeline).toArray();
     console.info("Aggregation pipeline finished.");
-    const afterCount = await db.collection("listings").countDocuments();
+    const afterCount = await db.collection("listing-features").countDocuments();
     console.info(`${afterCount - beforeCount} new listings were inserted.`);
 
     console.info("Deleting pending listings.");
@@ -56,34 +59,37 @@ export async function main() {
 const mergePipeline = [
   {
     $merge: {
-      into: "listings",
-      on: "listingId",
+      into: "listing-features",
+      on: "properties.listingId",
       whenMatched: "keepExisting",
       whenNotMatched: "insert",
     },
   },
 ];
 
-const mapToListing = (ad) => {
+const mapToGeoJson = (ad) => {
   return {
-    listingId: ad.id,
-    title: ad.title,
-    image: ad.image,
-    images: ad.images,
-    address: ad.attributes.location.mapAddress,
-    date: ad.date,
-    location: {
+    type: "Feature",
+    geometry: {
+      type: "Point",
       coordinates: [
         ad.attributes.location.longitude,
         ad.attributes.location.latitude,
       ],
-      type: "Point",
     },
-    price: ad.attributes.price,
-    bedrooms: ad.attributes.numberbedrooms,
-    bathrooms: ad.attributes.numberbathrooms,
-    url: ad.url,
-    sqft: ad.attributes.areainfeet,
-    attributes: ad.attributes,
+    properties: {
+      listingId: ad.id,
+      title: ad.title,
+      image: ad.image,
+      images: ad.images,
+      address: ad.attributes.location.mapAddress,
+      date: ad.date,
+      price: ad.attributes.price,
+      bedrooms: ad.attributes.numberbedrooms,
+      bathrooms: ad.attributes.numberbathrooms,
+      url: ad.url,
+      sqft: ad.attributes.areainfeet,
+      attributes: ad.attributes,
+    },
   };
 };

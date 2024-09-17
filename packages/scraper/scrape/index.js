@@ -20,7 +20,6 @@ export async function main() {
         locationId: locations.ONTARIO.TORONTO_GTA.CITY_OF_TORONTO.id,
         categoryId: categories.REAL_ESTATE.FOR_RENT.LONG_TERM_RENTALS.id,
         sortByName: "dateDesc",
-        adType: "OFFER",
         minResults: 40,
       },
       { scraperType: ScraperType.HTML }
@@ -31,6 +30,11 @@ export async function main() {
     const listings = resp.map(mapToGeoJson);
 
     const db = client.db("kijiji-map");
+
+    if (!listings.length) {
+      console.info("No listings were found by scraper.");
+      return Response.json({ success: true });
+    }
 
     const result = await db.collection("pending-listings").insertMany(listings);
     console.info(`${result.insertedCount} pending listings were found.`);

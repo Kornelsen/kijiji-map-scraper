@@ -1,8 +1,12 @@
-import { ScraperType, categories, locations, search } from "kijiji-scraper";
+import * as cheerio from "cheerio";
+import { Ad } from "kijiji-scraper";
 import { MongoClient, ServerApiVersion } from "mongodb";
 
 const password = encodeURIComponent(process.env.DB_PASSWORD);
 const uri = `mongodb+srv://${process.env.DB_USER}:${password}@${process.env.DB_URI}`;
+
+const ADS_URL =
+  "https://www.kijiji.ca/b-apartments-condos/city-of-toronto/c37l1700273?sort=dateDesc";
 
 const client = new MongoClient(uri, {
   serverApi: {
@@ -15,19 +19,18 @@ const client = new MongoClient(uri, {
 export async function main() {
   try {
     console.info("Starting scraping process.");
-    const resp = await search(
-      {
-        locationId: locations.ONTARIO.TORONTO_GTA.CITY_OF_TORONTO.id,
-        categoryId: categories.REAL_ESTATE.FOR_RENT.LONG_TERM_RENTALS.id,
-        sortByName: "dateDesc",
-        minResults: 40,
-      },
-      { scraperType: ScraperType.HTML }
-    );
+
+    const idSet = await getExistingAdIds();
+    const newAds = (await scrapeRecentAds()).filter((ad) => !idSet.has(ad.id));
+
+    console.info(`Found ${newAds.length} new ads to scrape.`);
+
+    const promises = newAds.map((ad) => Ad.Get(ad.href));
+    const responses = await Promise.all(promises);
 
     console.info("Scraping finished.");
 
-    const listings = resp.map(mapToGeoJson);
+    const listings = responses.map(mapToGeoJson);
 
     const db = client.db("kijiji-map");
 
@@ -70,6 +73,33 @@ const mergePipeline = [
     },
   },
 ];
+
+const getExistingAdIds = async () => {
+  const db = client.db("kijiji-map");
+  const ids = await db
+    .collection("listing-features")
+    .find({}, { projection: { "properties.listingId": 1 } })
+    .toArray();
+  const idsSet = new Set(ids.map((ad) => ad.properties.listingId));
+  return idsSet;
+};
+
+const scrapeRecentAds = async () => {
+  const page = await fetch(ADS_URL);
+  const html = await page.text();
+  const $ = cheerio.load(html);
+  const links = $('[data-testid="listing-link"]');
+  const ads = [];
+  links.each((i, div) => {
+    const href = $(div).attr("href");
+    const id = href.split("/").pop();
+    ads.push({
+      id,
+      href,
+    });
+  });
+  return ads;
+};
 
 const mapToGeoJson = (ad) => {
   return {

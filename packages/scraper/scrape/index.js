@@ -1,5 +1,4 @@
 import * as cheerio from "cheerio";
-import { Ad } from "kijiji-scraper";
 import { MongoClient, ServerApiVersion } from "mongodb";
 
 const password = encodeURIComponent(process.env.DB_PASSWORD);
@@ -25,12 +24,19 @@ export async function main() {
 
     console.info(`Found ${newAds.length} new ads to scrape.`);
 
-    const promises = newAds.map((ad) => Ad.Get(ad.href));
-    const responses = await Promise.all(promises);
+    const results = await Promise.allSettled(newAds.map(scrapeAdDetails));
+    const responses = results
+      .filter((r) => r.status === "fulfilled")
+      .map((r) => r.value);
+    const failures = results.filter((r) => r.status === "rejected");
+    if (failures.length) {
+      console.warn(`${failures.length} ads failed to scrape:`);
+      failures.forEach((f) => console.warn(`  ${f.reason?.message}`));
+    }
 
     console.info("Scraping finished.");
 
-    const listings = responses.map(mapToGeoJson);
+    const listings = responses.map(mapToGeoJson).filter(hasValidCoordinates);
 
     const db = client.db("kijiji-map");
 
@@ -78,7 +84,10 @@ const getExistingAdIds = async () => {
   const db = client.db("kijiji-map");
   const ids = await db
     .collection("listing-features")
-    .find({}, { projection: { "properties.listingId": 1 } })
+    .find(
+      { "properties.listingId": { $exists: true } },
+      { projection: { "properties.listingId": 1 } }
+    )
     .toArray();
   const idsSet = new Set(ids.map((ad) => ad.properties.listingId));
   return idsSet;
@@ -100,6 +109,71 @@ const scrapeRecentAds = async () => {
   });
   return ads;
 };
+
+// Ad pages are Next.js; the listing lives in the __NEXT_DATA__ Apollo cache
+// under a "RealEstateListing:<id>" key. Returns the same ad shape the
+// kijiji-scraper library used to, so mapToGeoJson and the DB schema are unchanged.
+const scrapeAdDetails = async (ad) => {
+  const res = await fetch(ad.href);
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} fetching ${ad.href}`);
+  }
+  const $ = cheerio.load(await res.text());
+  const raw = $("#__NEXT_DATA__").html();
+  if (!raw) {
+    throw new Error(`No __NEXT_DATA__ script tag at ${ad.href}`);
+  }
+  const apollo = JSON.parse(raw).props?.pageProps?.__APOLLO_STATE__ ?? {};
+  const listing =
+    apollo[`RealEstateListing:${ad.id}`] ??
+    Object.values(apollo).find((v) => v?.id === ad.id && v?.title);
+  if (!listing) {
+    throw new Error(`No listing data in __NEXT_DATA__ at ${ad.href}`);
+  }
+
+  return {
+    id: listing.id,
+    title: listing.title,
+    image: listing.imageUrls?.[0],
+    images: listing.imageUrls ?? [],
+    date: listing.activationDate ? new Date(listing.activationDate) : null,
+    url: listing.url ?? ad.href,
+    attributes: {
+      ...flattenAttributes(listing.attributes),
+      type: listing.type,
+      // price.amount is in cents; the DB stores dollars
+      price: listing.price?.amount != null ? listing.price.amount / 100 : null,
+      location: {
+        latitude: listing.location?.coordinates?.latitude,
+        longitude: listing.location?.coordinates?.longitude,
+        mapAddress: listing.location?.address,
+      },
+    },
+  };
+};
+
+const flattenAttributes = (attributes) => {
+  const attrs = {};
+  for (const attr of attributes?.all ?? []) {
+    // canonicalValues for numberbathrooms are scaled by 10 ("15" = 1.5);
+    // the display values hold the real number
+    const values =
+      attr.canonicalValues?.length && attr.canonicalName !== "numberbathrooms"
+        ? attr.canonicalValues
+        : attr.values;
+    let value = values.length > 1 ? values : values[0];
+    if (typeof value === "string" && value !== "" && !isNaN(value)) {
+      value = parseFloat(value);
+    }
+    attrs[attr.canonicalName] = value;
+  }
+  return attrs;
+};
+
+// documents with malformed geometry would abort the whole insertMany
+// because of the 2dsphere index on listing-features
+const hasValidCoordinates = (feature) =>
+  feature.geometry.coordinates.every(Number.isFinite);
 
 const mapToGeoJson = (ad) => {
   return {

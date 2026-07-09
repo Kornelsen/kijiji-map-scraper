@@ -15,12 +15,36 @@ const client = new MongoClient(uri, {
   },
 });
 
+// Dead-man's-switch monitoring via healthchecks.io: a ping marks the run ok,
+// /fail marks it failed, and no ping at all (trigger or deploy broken) also
+// alerts once the check's grace period passes.
+const pingHealthcheck = async (ok, message) => {
+  if (!process.env.HEALTHCHECK_PING_URL) {
+    console.warn("HEALTHCHECK_PING_URL is not set; skipping healthcheck ping.");
+    return;
+  }
+  const url = ok
+    ? process.env.HEALTHCHECK_PING_URL
+    : `${process.env.HEALTHCHECK_PING_URL}/fail`;
+  try {
+    await fetch(url, { method: "POST", body: message ?? "" });
+  } catch (error) {
+    console.error("Failed to ping healthcheck:", error);
+  }
+};
+
 export async function main() {
   try {
     console.info("Starting scraping process.");
 
     const idSet = await getExistingAdIds();
-    const newAds = (await scrapeRecentAds()).filter((ad) => !idSet.has(ad.id));
+    const recentAds = await scrapeRecentAds();
+    // The search page always has ads; an empty result means the
+    // listing-link selector no longer matches Kijiji's markup.
+    if (!recentAds.length) {
+      throw new Error("Search page yielded 0 ads — scraping selector is likely broken.");
+    }
+    const newAds = recentAds.filter((ad) => !idSet.has(ad.id));
 
     console.info(`Found ${newAds.length} new ads to scrape.`);
 
@@ -42,6 +66,7 @@ export async function main() {
 
     if (!listings.length) {
       console.info("No listings were found by scraper.");
+      await pingHealthcheck(true, "No new listings this run.");
       return Response.json({ success: true });
     }
 
@@ -59,13 +84,19 @@ export async function main() {
     console.info(`${afterCount - beforeCount} new listings were inserted.`);
 
     console.info("Deleting pending listings.");
-    db.collection("pending-listings").deleteMany({});
+    await db.collection("pending-listings").deleteMany({});
     console.info("Process finished successfully.");
 
+    await pingHealthcheck(
+      true,
+      `${afterCount - beforeCount} new listings inserted (${failures.length} ads failed to scrape).`
+    );
     return Response.json({ success: true });
   } catch (error) {
     console.error(error);
-    return Response.error();
+    await pingHealthcheck(false, String(error?.stack ?? error));
+    // rethrow so DigitalOcean records the activation as an error
+    throw error;
   }
 }
 

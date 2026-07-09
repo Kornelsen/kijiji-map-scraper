@@ -27,3 +27,10 @@ One run of `main()` does the following, in order:
 ## Configuration
 
 MongoDB Atlas credentials come from environment variables `DB_USER`, `DB_PASSWORD`, and `DB_URI`, which `project.yml` injects into the function from a local `.env` file (gitignored). The database name is `kijiji-map`.
+
+`HEALTHCHECK_PING_URL` (also injected from `.env`) is a healthchecks.io ping URL used as a dead-man's switch: each run pings it on success or `<url>/fail` on failure, and a missed hourly ping triggers an alert. Every variable referenced in `project.yml` must be present in `.env` or `doctl serverless deploy` fails.
+
+## Failure monitoring
+
+- A run that finds 0 ads on the search page throws (the selector broke) rather than exiting successfully.
+- Errors are rethrown from `main()` after pinging the healthcheck, so failed runs show up in DigitalOcean's Functions insights (error rate, last 14 days) and `doctl serverless activations list`. Function logs are retained for 3 days.
